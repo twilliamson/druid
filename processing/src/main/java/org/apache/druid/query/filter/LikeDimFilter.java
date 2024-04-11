@@ -35,6 +35,7 @@ import org.apache.druid.segment.filter.LikeFilter;
 import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
@@ -254,9 +255,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
             suffixMatch = SuffixMatch.MATCH_ANY;
           }
           if (value.length() > 0 || !parts.isEmpty()) {
-            parts.add(new LikePattern.PatternPart(value.toString(), leadingLength));
-            pattern.add(new LikePattern(parts, anchored));
-            parts = new ArrayList<>();
+            parts.add(new LikePattern.PatternPart(leadingLength, value.toString()));
+            pattern.add(new LikePattern(anchored, parts.toArray(new LikePattern.PatternPart[0])));
+            parts.clear();
             value.setLength(0);
             leadingLength = 0;
           }
@@ -265,7 +266,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           inPrefix = false;
           suffixMatch = SuffixMatch.MATCH_PATTERN;
           if (value.length() > 0) {
-            parts.add(new LikePattern.PatternPart(value.toString(), leadingLength));
+            parts.add(new LikePattern.PatternPart(leadingLength, value.toString()));
             value.setLength(0);
             leadingLength = 0;
           }
@@ -282,8 +283,8 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       }
 
       if (value.length() > 0 || leadingLength > 0 || !anchored || !parts.isEmpty()) {
-        parts.add(new LikePattern.PatternPart(value.toString(), leadingLength));
-        pattern.add(new LikePattern(parts, anchored));
+        parts.add(new LikePattern.PatternPart(leadingLength, value.toString()));
+        pattern.add(new LikePattern(anchored, parts.toArray(new LikePattern.PatternPart[0])));
       }
 
       return new LikeMatcher(likePattern, suffixMatch, prefix.toString(), pattern);
@@ -386,13 +387,13 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
     {
       private static class PatternPart
       {
-        private final String clause;
         private final int leadingLength;
+        private final String clause;
 
-        public PatternPart(String clause, int leadingLength)
+        public PatternPart(int leadingLength, String clause)
         {
-          this.clause = clause;
           this.leadingLength = leadingLength;
+          this.clause = clause;
         }
 
         @Override
@@ -425,11 +426,11 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         }
       }
 
-      private final List<PatternPart> parts;
+      private final PatternPart[] parts;
       private final boolean anchored; // whether this is a "starts with" (foo) or "contains" (%foo) pattern
       private final int length; // number of characters that have to be matched, aka, how many literals and _ in the parts
 
-      public LikePattern(List<PatternPart> parts, boolean anchored)
+      public LikePattern(boolean anchored, PatternPart... parts)
       {
         this.parts = parts;
         this.anchored = anchored;
@@ -448,11 +449,11 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         }
 
         if (anchored) {
-          return advanceAnchored(value, offset, parts, 0);
-        } else if (parts.isEmpty()) {
-          return offset;
+          return advanceAnchored(value, offset, 0);
+        } else if (parts.length == 0) {
+          return offset; // TODO TODO TODO this is never hit??
         } else {
-          PatternPart first = parts.get(0);
+          PatternPart first = parts[0];
 
           while (offset <= value.length()) { // TODO TODO TODO < or <= ?
             if (overflows(first, offset)) {
@@ -466,7 +467,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
             }
             offset += first.clause.length();
 
-            int matchOffset = advanceAnchored(value, offset, parts, 1);
+            int matchOffset = advanceAnchored(value, offset, 1);
             if (matchOffset != -1) {
               return matchOffset;
             }
@@ -476,17 +477,22 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         return -1;
       }
 
-      // TODO TODO TODO document?
       public boolean matchesSuffix(String value)
       {
-        return advanceAnchored(value, value.length() - length, parts, 0) != -1;
+        return advanceAnchored(value, value.length() - length, 0) != -1;
       }
 
-      // TODO TODO TODO
-      private int advanceAnchored(String value, int offset, List<PatternPart> parts, int startIndex)
+      /**
+       *
+       * @param value The string to match against
+       * @param offset The offset into value to start the match
+       * @param startIndex The index into the pattern parts to start the match
+       * @return
+       */
+      private int advanceAnchored(String value, int offset, int startIndex)
       {
-        for (int i = startIndex; i < parts.size(); i++) {
-          PatternPart part = parts.get(i);
+        for (int i = startIndex; i < parts.length; i++) {
+          PatternPart part = parts[i];
           if (offset == -1 || overflows(part, offset)) {
             return -1;
           }
@@ -519,13 +525,13 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           return false;
         }
         LikePattern other = (LikePattern) o;
-        return Objects.equals(parts, other.parts);
+        return anchored == other.anchored && length == other.length && Arrays.equals(parts, other.parts);
       }
 
       @Override
       public int hashCode()
       {
-        return Objects.hash(anchored, parts);
+        return Boolean.hashCode(anchored) ^ Arrays.hashCode(parts);
       }
 
       @Override
