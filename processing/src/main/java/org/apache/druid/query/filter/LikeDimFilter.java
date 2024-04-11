@@ -449,28 +449,27 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         }
 
         if (anchored) {
-          return advanceAnchored(value, offset, 0);
+          return matches(value, offset, 0) ? length : -1;
         } else if (parts.length == 0) {
           return offset; // TODO TODO TODO this is never hit??
         } else {
           PatternPart first = parts[0];
 
-          while (offset <= value.length()) { // TODO TODO TODO < or <= ?
-            if (overflows(first, offset)) {
-              return -1;
-            }
-            offset += first.leadingLength;
+          if (overflows(first, offset)) {
+            return -1;
+          }
+          offset += first.leadingLength;
 
+          while (offset <= value.length()) { // TODO TODO TODO < or <= ?
             offset = value.indexOf(first.clause, offset);
+
             if (offset == -1) {
               return -1;
+            } else if (matches(value, offset + first.clause.length(), 1)) {
+              return offset + length - first.leadingLength; // TODO TODO TODO unit test for boundary condition
             }
-            offset += first.clause.length();
 
-            int matchOffset = advanceAnchored(value, offset, 1);
-            if (matchOffset != -1) {
-              return matchOffset;
-            }
+            ++offset;
           }
         }
 
@@ -479,32 +478,22 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
 
       public boolean matchesSuffix(String value)
       {
-        return advanceAnchored(value, value.length() - length, 0) != -1;
+        return matches(value, value.length() - length, 0);
       }
 
-      /**
-       *
-       * @param value The string to match against
-       * @param offset The offset into value to start the match
-       * @param startIndex The index into the pattern parts to start the match
-       * @return
-       */
-      private int advanceAnchored(String value, int offset, int startIndex)
+      private boolean matches(String value, int offset, int startIndex)
       {
         for (int i = startIndex; i < parts.length; i++) {
           PatternPart part = parts[i];
-          if (offset == -1 || overflows(part, offset)) {
-            return -1;
-          }
-          offset += part.leadingLength;
 
-          if (!value.regionMatches(offset, part.clause, 0, part.clause.length())) {
-            return -1;
+          if (overflows(part, offset) || !value.regionMatches(offset + part.leadingLength, part.clause, 0, part.clause.length())) {
+            return false;
           }
-          offset += part.clause.length();
+
+          offset += part.leadingLength + part.clause.length();
         }
 
-        return offset;
+        return true;
       }
 
       // TODO TODO TODO
