@@ -231,13 +231,15 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
     public static LikeMatcher from(final String likePattern, @Nullable final Character escapeChar)
     {
       final StringBuilder prefix = new StringBuilder();
-      // The goal is to normalize the pattern so that contiguous sequences of % and/or _ have all the _'s first, then a
-      // single wildcard (if there was at least one), then the next literal, e.g., x_%_%yz = x__%yz
-      // Each pattern clause then consists of zero or more required leading characters (the _'s) and then either a
-      // literal to match immediately (startsWith) or one to search for the next occurence of.
+      // The goal is to normalize the pattern so that contiguous sequences of % and/or _ have all the %'s first, e.g.:
+      // x_%_%yz = x%__yz
+      // Each of the pieces separated by %'s are further split into pattern parts, with each part have zero or more
+      // required leading characters (the _'s) followed by a string literal, e.g.:
+      // a_b%c%__d_e -> [[a, _b], [c], [__d, _e]]
       final List<LikePattern> pattern = new ArrayList<>();
       final StringBuilder value = new StringBuilder(); // literals we've seen since the last _ or %
-      LikePattern.PatternType patternType = LikePattern.PatternType.STARTS_WITH; // changes to CONTAINS when we see %
+      List<LikePattern.PatternPart> parts = new ArrayList<>();
+      boolean anchored = true; // false if the pending part is prefixed with the % wildcard
       int leadingLength = 0; // how many _'s we've seen since the last literal
       boolean escaping = false;
       boolean inPrefix = true;
@@ -251,20 +253,21 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           if (suffixMatch == SuffixMatch.MATCH_EMPTY) {
             suffixMatch = SuffixMatch.MATCH_ANY;
           }
-          if (value.length() > 0) {
-            pattern.add(new LikePattern(patternType, value.toString(), leadingLength));
+          if (value.length() > 0 || !parts.isEmpty()) {
+            parts.add(new LikePattern.PatternPart(value.toString(), leadingLength));
+            pattern.add(new LikePattern(parts, anchored));
+            parts = new ArrayList<>();
             value.setLength(0);
             leadingLength = 0;
           }
-          patternType = LikePattern.PatternType.CONTAINS;
+          anchored = false;
         } else if (c == '_' && !escaping) {
           inPrefix = false;
           suffixMatch = SuffixMatch.MATCH_PATTERN;
           if (value.length() > 0) {
-            pattern.add(new LikePattern(patternType, value.toString(), leadingLength));
+            parts.add(new LikePattern.PatternPart(value.toString(), leadingLength));
             value.setLength(0);
             leadingLength = 0;
-            patternType = LikePattern.PatternType.STARTS_WITH;
           }
           ++leadingLength;
         } else {
@@ -278,8 +281,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         }
       }
 
-      if (value.length() > 0 || leadingLength > 0 || patternType == LikePattern.PatternType.CONTAINS) {
-        pattern.add(new LikePattern(patternType, value.toString(), leadingLength));
+      if (value.length() > 0 || leadingLength > 0 || !anchored || !parts.isEmpty()) {
+        parts.add(new LikePattern.PatternPart(value.toString(), leadingLength));
+        pattern.add(new LikePattern(parts, anchored));
       }
 
       return new LikeMatcher(likePattern, suffixMatch, prefix.toString(), pattern);
@@ -297,45 +301,26 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         return DruidPredicateMatch.UNKNOWN;
       }
 
-      int suffixOffset = val.length();
-      int suffixIndex = pattern.size();
-
-      // Check for suffixes anchored to the end of the string, e.g., a%b_d_
-      // (We can't eagerly match the b_d_ portion, since that leads to false negatives: abcdexyzbcde)
-      // Note: In the case of a trailing %, the anchored suffix is an empty string.
-      while (suffixIndex > 0) {
-        --suffixIndex;
-
-        LikePattern suffix = pattern.get(suffixIndex);
-
-        if (!val.regionMatches(suffixOffset - suffix.clause.length(), suffix.clause, 0, suffix.clause.length())) {
-          return DruidPredicateMatch.FALSE;
-        }
-
-        suffixOffset = suffixOffset - suffix.clause.length() - suffix.leadingLength;
-
-        if (suffixOffset < 0) {
-          return DruidPredicateMatch.FALSE;
-        }
-
-        if (suffix.patternType == LikePattern.PatternType.CONTAINS) {
-          if (suffixIndex == 0) {
-            // %some_suffix
-            return DruidPredicateMatch.TRUE;
-          }
-          // Encountered a %, so the next pattern part is no longer anchored to the end of string.
-          break;
-        }
+      if (pattern.isEmpty()) {
+        return DruidPredicateMatch.of(val.isEmpty());
       }
 
-      if (suffixIndex == 0) {
-        // No prefix remains: check we consumed the whole string.
+      // Check for suffix anchored to the end of the string, e.g., a%b_d_
+      // (We can't eagerly match the b_d_ portion, since that leads to false negatives: abcdexyzbcde)
+      // Note: In the case of a trailing %, the anchored suffix is an empty string.
+      LikePattern suffix = pattern.get(pattern.size() - 1);
+      int suffixOffset = val.length() - suffix.length;
+
+      if (!suffix.matchesSuffix(val)) {
+        return DruidPredicateMatch.FALSE;
+      } else if (suffix.anchored) {
+        // There was no % in the pattern
         return DruidPredicateMatch.of(suffixOffset == 0);
       }
 
       int offset = 0;
 
-      for (int i = 0; i < suffixIndex; ++i) {
+      for (int i = 0; i < pattern.size() - 1; ++i) {
         offset = pattern.get(i).advance(val, offset);
 
         if (offset == -1 || offset > suffixOffset) {
@@ -399,48 +384,129 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
 
     private static class LikePattern
     {
-      public enum PatternType
+      private static class PatternPart
       {
-        STARTS_WITH {
-          @Override
-          int advance(int offset, String haystack, String needle)
-          {
-            return haystack.regionMatches(offset, needle, 0, needle.length()) ? offset + needle.length() : -1;
-          }
-        },
-        CONTAINS {
-          @Override
-          int advance(int offset, String haystack, String needle)
-          {
-            int matchStart = haystack.indexOf(needle, offset);
+        private final String clause;
+        private final int leadingLength;
 
-            return matchStart == -1 ? -1 : matchStart + needle.length();
-          }
-        };
+        public PatternPart(String clause, int leadingLength)
+        {
+          this.clause = clause;
+          this.leadingLength = leadingLength;
+        }
 
-        abstract int advance(int offset, String haystack, String needle);
+        @Override
+        public String toString()
+        {
+          String escaped = StringUtils.replace(clause, "\\", "\\\\");
+          escaped = StringUtils.replace(escaped, "%", "\\%");
+          escaped = StringUtils.replace(escaped, "_", "\\_");
+          return StringUtils.repeat("_", leadingLength) + escaped;
+        }
+
+        @Override
+        public boolean equals(Object o)
+        {
+          if (this == o) {
+            return true;
+          }
+          if (o == null || getClass() != o.getClass()) {
+            return false;
+          }
+          PatternPart other = (PatternPart) o;
+          return leadingLength == other.leadingLength &&
+                 Objects.equals(clause, other.clause);
+        }
+
+        @Override
+        public int hashCode()
+        {
+          return Objects.hash(clause, leadingLength);
+        }
       }
 
-      private final PatternType patternType;
-      private final String clause;
-      private final int leadingLength;
+      private final List<PatternPart> parts;
+      private final boolean anchored; // whether this is a "starts with" (foo) or "contains" (%foo) pattern
+      private final int length; // number of characters that have to be matched, aka, how many literals and _ in the parts
 
-      public LikePattern(PatternType patternType, String clause, int leadingLength)
+      public LikePattern(List<PatternPart> parts, boolean anchored)
       {
-        this.patternType = patternType;
-        this.clause = clause;
-        this.leadingLength = leadingLength;
+        this.parts = parts;
+        this.anchored = anchored;
+
+        int length = 0;
+        for (PatternPart part : parts) {
+          length += part.leadingLength + part.clause.length();
+        }
+        this.length = length;
       }
 
       public int advance(String value, int offset)
       {
-        if (leadingLength > Integer.MAX_VALUE - offset || offset > Integer.MAX_VALUE - leadingLength) {
-          // Even though overflow would be handled by PatternType, CodeQL flags it as needing to be checked here:
-          // https://codeql.github.com/codeql-query-help/java/java-tainted-arithmetic/
+        if (offset > value.length() - length) {
           return -1;
         }
 
-        return patternType.advance(offset + leadingLength, value, clause);
+        if (anchored) {
+          return advanceAnchored(value, offset, parts, 0);
+        } else if (parts.isEmpty()) {
+          return offset;
+        } else {
+          PatternPart first = parts.get(0);
+
+          while (offset <= value.length()) { // TODO TODO TODO < or <= ?
+            if (overflows(first, offset)) {
+              return -1;
+            }
+            offset += first.leadingLength;
+
+            offset = value.indexOf(first.clause, offset);
+            if (offset == -1) {
+              return -1;
+            }
+            offset += first.clause.length();
+
+            int matchOffset = advanceAnchored(value, offset, parts, 1);
+            if (matchOffset != -1) {
+              return matchOffset;
+            }
+          }
+        }
+
+        return -1;
+      }
+
+      // TODO TODO TODO document?
+      public boolean matchesSuffix(String value)
+      {
+        return advanceAnchored(value, value.length() - length, parts, 0) != -1;
+      }
+
+      // TODO TODO TODO
+      private int advanceAnchored(String value, int offset, List<PatternPart> parts, int startIndex)
+      {
+        for (int i = startIndex; i < parts.size(); i++) {
+          PatternPart part = parts.get(i);
+          if (offset == -1 || overflows(part, offset)) {
+            return -1;
+          }
+          offset += part.leadingLength;
+
+          if (!value.regionMatches(offset, part.clause, 0, part.clause.length())) {
+            return -1;
+          }
+          offset += part.clause.length();
+        }
+
+        return offset;
+      }
+
+      // TODO TODO TODO
+      private boolean overflows(PatternPart part, int offset)
+      {
+        // Even though overflow would be handled by regionMatches, CodeQL flags it as needing to be checked:
+        // https://codeql.github.com/codeql-query-help/java/java-tainted-arithmetic/
+        return part.leadingLength > Integer.MAX_VALUE - offset || offset > Integer.MAX_VALUE - part.leadingLength;
       }
 
       @Override
@@ -453,24 +519,26 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           return false;
         }
         LikePattern other = (LikePattern) o;
-        return patternType == other.patternType &&
-               leadingLength == other.leadingLength &&
-               Objects.equals(clause, other.clause);
+        return Objects.equals(parts, other.parts);
       }
 
       @Override
       public int hashCode()
       {
-        return Objects.hash(patternType, leadingLength, clause);
+        return Objects.hash(anchored, parts);
       }
 
       @Override
       public String toString()
       {
-        String escaped = StringUtils.replace(clause, "\\", "\\\\");
-        escaped = StringUtils.replace(escaped, "%", "\\%");
-        escaped = StringUtils.replace(escaped, "_", "\\_");
-        return StringUtils.repeat("_", leadingLength) + (patternType == PatternType.CONTAINS ? "%" : "") + escaped;
+        StringBuilder result = new StringBuilder();
+        if (!anchored) {
+          result.append('%');
+        }
+        for (PatternPart part : parts) {
+          result.append(part);
+        }
+        return result.toString();
       }
     }
 
