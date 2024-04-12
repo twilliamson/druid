@@ -240,7 +240,6 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       final List<LikePattern> pattern = new ArrayList<>();
       final StringBuilder value = new StringBuilder(); // literals we've seen since the last _ or %
       List<LikePattern.PatternPart> parts = new ArrayList<>();
-      boolean anchored = true; // false if the pending part is prefixed with the % wildcard
       int leadingLength = 0; // how many _'s we've seen since the last literal
       boolean escaping = false;
       boolean inPrefix = true;
@@ -256,12 +255,14 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           }
           if (value.length() > 0 || !parts.isEmpty()) {
             parts.add(new LikePattern.PatternPart(leadingLength, value.toString()));
-            pattern.add(new LikePattern(anchored, parts.toArray(new LikePattern.PatternPart[0])));
+            pattern.add(new LikePattern(parts.toArray(new LikePattern.PatternPart[0])));
             parts.clear();
             value.setLength(0);
             leadingLength = 0;
+          } else if (pattern.isEmpty()) {
+            // Pattern starts with %, so add an empty prefix
+            pattern.add(new LikePattern());
           }
-          anchored = false;
         } else if (c == '_' && !escaping) {
           inPrefix = false;
           suffixMatch = SuffixMatch.MATCH_PATTERN;
@@ -282,9 +283,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         }
       }
 
-      if (value.length() > 0 || leadingLength > 0 || !anchored || !parts.isEmpty()) {
+      if (value.length() > 0 || leadingLength > 0 || likePattern.endsWith("%") || !parts.isEmpty()) {
         parts.add(new LikePattern.PatternPart(leadingLength, value.toString()));
-        pattern.add(new LikePattern(anchored, parts.toArray(new LikePattern.PatternPart[0])));
+        pattern.add(new LikePattern(parts.toArray(new LikePattern.PatternPart[0])));
       }
 
       return new LikeMatcher(likePattern, suffixMatch, prefix.toString(), pattern);
@@ -306,25 +307,43 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         return DruidPredicateMatch.of(val.isEmpty());
       }
 
+      // Check the anchored prefix, i.e., the pattern part that must occur at the start of the string.
+      // Note: In the case of a leading %, the anchored prefix is an empty string.
+      LikePattern prefix = pattern.get(0);
+
+      if (!prefix.matches(val, 0, val.length())) {
+        return DruidPredicateMatch.FALSE;
+      } else if (pattern.size() == 1) {
+        // There was no % in the pattern
+        return DruidPredicateMatch.of(prefix.length == val.length());
+      }
+
       // Check for suffix anchored to the end of the string, e.g., a%b_d_
       // (We can't eagerly match the b_d_ portion, since that leads to false negatives: abcdexyzbcde)
       // Note: In the case of a trailing %, the anchored suffix is an empty string.
       LikePattern suffix = pattern.get(pattern.size() - 1);
       int suffixOffset = val.length() - suffix.length;
 
-      if (!suffix.matchesStartingAt(val, suffixOffset, val.length())) {
+      if (suffixOffset < prefix.length || !suffix.matches(val, suffixOffset, val.length())) {
         return DruidPredicateMatch.FALSE;
-      } else if (suffix.anchored) {
-        // There was no % in the pattern
-        return DruidPredicateMatch.of(suffixOffset == 0);
       }
 
-      int offset = 0;
+      // TODO TODO TODO document the contains part
+      int offset = prefix.length;
 
-      for (int i = 0; i < pattern.size() - 1; ++i) {
-        offset = pattern.get(i).advance(val, offset, suffixOffset);
+      for (int i = 1; i < pattern.size() - 1; ++i) {
+        LikePattern part = pattern.get(i);
+        boolean partMatched = false;
 
-        if (offset == -1) {
+        while (offset < suffixOffset) {
+          if (part.matches(val, offset, suffixOffset)) {
+            partMatched = true;
+            break;
+          }
+          ++offset;
+        }
+
+        if (!partMatched) {
           return DruidPredicateMatch.FALSE;
         }
       }
@@ -366,6 +385,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
     @VisibleForTesting
     String describeCompilation()
     {
+      // TODO TODO TODO: probably need to make this better
       StringBuilder description = new StringBuilder();
 
       description.append(likePattern).append(" => ");
@@ -376,7 +396,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         description.append(iterator.next());
 
         if (iterator.hasNext()) {
-          description.append('|');
+          description.append('%');
         }
       }
 
@@ -427,13 +447,11 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       }
 
       private final PatternPart[] parts;
-      private final boolean anchored; // whether this is a "starts with" (foo) or "contains" (%foo) pattern
       private final int length; // number of characters that have to be matched, aka, how many literals and _ in the parts
 
-      public LikePattern(boolean anchored, PatternPart... parts)
+      public LikePattern(PatternPart... parts)
       {
         this.parts = parts;
-        this.anchored = anchored;
 
         int length = 0;
         for (PatternPart part : parts) {
@@ -442,29 +460,11 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         this.length = length;
       }
 
-      public int advance(String value, int startOffset, int endOffset)
-      {
-        endOffset = Math.min(Math.max(0, endOffset), value.length());
-
-        if (startOffset > endOffset - length) {
-          return -1;
-        }
-
-        if (anchored) {
-          return matchesStartingAt(value, startOffset, endOffset) ? startOffset + length : -1;
-        } else {
-          for (int offset = startOffset; offset < endOffset; ++offset) {
-            // TODO TODO TODO compare performance with using indexOf and subtracting leading length
-            if (matchesStartingAt(value, offset, endOffset)) {
-              return offset + length;
-            }
-          }
-        }
-
-        return -1;
-      }
-
-      public boolean matchesStartingAt(String value, int offset, int endOffset) // TODO TODO TODO offset -> startOffset? range checks?
+      public boolean matches(
+          String value,
+          int offset,
+          int endOffset
+      ) // TODO TODO TODO offset -> startOffset? range checks?
       {
         for (PatternPart part : parts) {
           // TODO TODO TODO > or >= ?
@@ -500,22 +500,19 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           return false;
         }
         LikePattern other = (LikePattern) o;
-        return anchored == other.anchored && length == other.length && Arrays.equals(parts, other.parts);
+        return length == other.length && Arrays.equals(parts, other.parts);
       }
 
       @Override
       public int hashCode()
       {
-        return Boolean.hashCode(anchored) ^ Arrays.hashCode(parts);
+        return Arrays.hashCode(parts);
       }
 
       @Override
       public String toString()
       {
         StringBuilder result = new StringBuilder();
-        if (!anchored) {
-          result.append('%');
-        }
         for (PatternPart part : parts) {
           result.append(part);
         }
