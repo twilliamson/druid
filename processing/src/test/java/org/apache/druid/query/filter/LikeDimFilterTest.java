@@ -312,9 +312,14 @@ public class LikeDimFilterTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testPatternTODOTODOTODO() // TODO TODO TODO
+  public void testPatternFindsCorrectMiddleMatch()
   {
+    assertMatch("%km%z", "akmz", DruidPredicateMatch.TRUE);
+    assertMatch("%km%z", "akkmz", DruidPredicateMatch.TRUE);
+    assertMatch("%xy%yz", "xyz", DruidPredicateMatch.FALSE);
+    assertMatch("%xy%yz", "xyyz", DruidPredicateMatch.TRUE);
     assertMatch("%1 _ 5%6", "1 2 3 1 4 5 6", DruidPredicateMatch.TRUE);
+    assertMatch("1 _ 5%6", "1 2 3 1 4 5 6", DruidPredicateMatch.FALSE);
   }
 
   private void assertCompilation(String pattern, String expected)

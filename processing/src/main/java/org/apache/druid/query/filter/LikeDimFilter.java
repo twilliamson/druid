@@ -322,9 +322,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       int offset = 0;
 
       for (int i = 0; i < pattern.size() - 1; ++i) {
-        offset = pattern.get(i).advance(val, offset);
+        offset = pattern.get(i).advance(val, offset, val.length());
 
-        if (offset == -1 || offset > suffixOffset) {
+        if (offset == -1) {
           return DruidPredicateMatch.FALSE;
         }
       }
@@ -442,33 +442,22 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         this.length = length;
       }
 
-      public int advance(String value, int offset)
+      public int advance(String value, int offset, int endOffset)
       {
-        if (offset > value.length() - length) {
+        endOffset = Math.min(Math.max(0, endOffset), value.length());
+
+        if (offset > endOffset - length) {
           return -1;
         }
 
         if (anchored) {
-          return matches(value, offset, 0) ? length : -1;
-        } else if (parts.length == 0) {
-          return offset; // TODO TODO TODO this is never hit??
+          return advance(value, offset, endOffset, true);
         } else {
-          PatternPart first = parts[0];
-
-          if (overflows(first, offset)) {
-            return -1;
-          }
-          offset += first.leadingLength;
-
-          while (offset <= value.length()) { // TODO TODO TODO < or <= ?
-            offset = value.indexOf(first.clause, offset);
-
-            if (offset == -1) {
-              return -1;
-            } else if (matches(value, offset + first.clause.length(), 1)) {
-              return offset + length - first.leadingLength; // TODO TODO TODO unit test for boundary condition
+          while (offset < endOffset) { // TODO TODO TODO < or <= ?
+            int matchOffset = advance(value, offset, endOffset, false);
+            if (matchOffset != -1) {
+              return matchOffset;
             }
-
             ++offset;
           }
         }
@@ -478,22 +467,44 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
 
       public boolean matchesSuffix(String value)
       {
-        return matches(value, value.length() - length, 0);
+        return advance(value, value.length() - length, value.length(), true) != -1;
       }
 
-      private boolean matches(String value, int offset, int startIndex)
+      private int advance(String value, int offset, int endOffset, boolean anchored)
       {
+        int startIndex = 0;
+
+        if (!anchored) {
+          startIndex = 1;
+          PatternPart first = parts[0];
+
+          if (overflows(first, offset)) {
+            return -1;
+          }
+
+          offset = value.indexOf(first.clause, offset + first.leadingLength);
+          if (offset == -1 || offset > endOffset) { // TODO TODO TODO > or >= ?
+            return -1;
+          }
+          offset += first.clause.length();
+        }
+
         for (int i = startIndex; i < parts.length; i++) {
           PatternPart part = parts[i];
 
-          if (overflows(part, offset) || !value.regionMatches(offset + part.leadingLength, part.clause, 0, part.clause.length())) {
-            return false;
+          // TODO TODO TODO > or >= ?
+          if (overflows(part, offset) || offset + part.leadingLength + part.clause.length() > endOffset) {
+            return -1;
+          }
+
+          if (!value.regionMatches(offset + part.leadingLength, part.clause, 0, part.clause.length())) {
+            return -1;
           }
 
           offset += part.leadingLength + part.clause.length();
         }
 
-        return true;
+        return offset;
       }
 
       // TODO TODO TODO
