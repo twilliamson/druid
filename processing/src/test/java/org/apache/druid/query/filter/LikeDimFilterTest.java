@@ -151,24 +151,24 @@ public class LikeDimFilterTest extends InitializedNullHandlingTest
   @Test
   public void testPatternCompilation()
   {
-    assertCompilation("%1 _ 5%6", ":%1 _ 5|%6"); // TODO TODO TODO
     assertCompilation("", ":");
-    assertCompilation("a", "a:a");
-    assertCompilation("abc", "abc:abc");
-    assertCompilation("a%", "a:a|%");
-    assertCompilation("%a", ":%a");
-    assertCompilation("%_a", ":%_a");
-    assertCompilation("_%a", ":%_a");
-    assertCompilation("_%_a", ":%__a");
-    assertCompilation("abc%", "abc:abc|%");
-    assertCompilation("a%b", "a:a|%b");
-    assertCompilation("abc%x", "abc:abc|%x");
-    assertCompilation("abc%xyz", "abc:abc|%xyz");
-    assertCompilation("____", ":____");
-    assertCompilation("%%%%", ":%");
-    assertCompilation("%_%_%%__", ":%____");
-    assertCompilation("%_%a_%bc%_d_", ":%_a_|%bc|%_d_");
-    assertCompilation("\\%_%a_\\%b\\\\c\\___%_%_d_w%x_y_z", "%:\\%_|%a_\\%b\\\\c\\___|%__d_w|%x_y_z");
+    assertCompilation("a", "a:|a|");
+    assertCompilation("abc", "abc:|abc|");
+    assertCompilation("a%", "a:|a|*||");
+    assertCompilation("%a", ":||*|a|");
+    assertCompilation("%_a", ":||*|_a|");
+    assertCompilation("_%a", ":||*|_a|");
+    assertCompilation("_%_a", ":||*|__a|");
+    assertCompilation("abc%", "abc:|abc|*||");
+    assertCompilation("a%b", "a:|a|*|b|");
+    assertCompilation("abc%x", "abc:|abc|*|x|");
+    assertCompilation("abc%xyz", "abc:|abc|*|xyz|");
+    assertCompilation("____", ":|____|");
+    assertCompilation("%%%%", ":||*||");
+    assertCompilation("%_%_%%__", ":||*|____|");
+    assertCompilation("%_%a_%bc%_d_", ":||*|_a|_|*|bc|*|_d|_|");
+    assertCompilation("%1 _ 5%6", ":||*|1 |_ 5|*|6|");
+    assertCompilation("\\%_%a_\\%b\\\\c\\___%_%_d_w%x_y_z", "%:|\\%|_|*|a|_\\%b\\\\c\\_|__|*|__d|_w|*|x|_y|_z|");
   }
 
   @Test

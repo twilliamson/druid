@@ -36,10 +36,10 @@ import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFilter
 {
@@ -328,15 +328,20 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         return DruidPredicateMatch.FALSE;
       }
 
-      // TODO TODO TODO document the contains part
+      // Check all the remaining unanchored patterns between the prefix and suffix.
+      // This is O(mn) where m is the pattern length and n is the value length.
+      // In practice, we expect linear time, since most part matches should fail without searching the whole string.
       int offset = prefix.length;
 
       for (int i = 1; i < pattern.size() - 1; ++i) {
-        LikePattern part = pattern.get(i);
+        LikePattern contains = pattern.get(i);
         boolean partMatched = false;
 
         while (offset < suffixOffset) {
-          if (part.matches(val, offset, suffixOffset)) {
+          // Optimization: The JVM has an intrinsic for String.indexOf()
+          int partOffset = val.indexOf(contains.parts[0].clause, offset);
+          // TODO TODO TODO verify if indexOf is faster
+          if (contains.matches(val, partOffset, suffixOffset)) {
             partMatched = true;
             break;
           }
@@ -385,22 +390,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
     @VisibleForTesting
     String describeCompilation()
     {
-      // TODO TODO TODO: probably need to make this better
-      StringBuilder description = new StringBuilder();
-
-      description.append(likePattern).append(" => ");
-      description.append(prefix).append(':');
-
-      Iterator<LikePattern> iterator = pattern.iterator();
-      while (iterator.hasNext()) {
-        description.append(iterator.next());
-
-        if (iterator.hasNext()) {
-          description.append('%');
-        }
-      }
-
-      return description.toString();
+      return likePattern + " => " + prefix + ":" + pattern.stream()
+                                                          .map(Object::toString)
+                                                          .collect(Collectors.joining("*"));
     }
 
     private static class LikePattern
@@ -460,34 +452,25 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         this.length = length;
       }
 
-      public boolean matches(
-          String value,
-          int offset,
-          int endOffset
-      ) // TODO TODO TODO offset -> startOffset? range checks?
+      public boolean matches(String value, int startOffset, int endOffset)
       {
+        if (startOffset < 0 || startOffset > endOffset) {
+          return false;
+        }
+
         for (PatternPart part : parts) {
-          // TODO TODO TODO > or >= ?
-          if (overflows(part, offset) || offset + part.leadingLength + part.clause.length() > endOffset) {
+          if ((long) startOffset + part.leadingLength + part.clause.length() > endOffset) {
             return false;
           }
 
-          if (!value.regionMatches(offset + part.leadingLength, part.clause, 0, part.clause.length())) {
+          if (!value.regionMatches(startOffset + part.leadingLength, part.clause, 0, part.clause.length())) {
             return false;
           }
 
-          offset += part.leadingLength + part.clause.length();
+          startOffset += part.leadingLength + part.clause.length();
         }
 
         return true;
-      }
-
-      // TODO TODO TODO inline again
-      private boolean overflows(PatternPart part, int offset)
-      {
-        // Even though overflow would be handled by regionMatches, CodeQL flags it as needing to be checked:
-        // https://codeql.github.com/codeql-query-help/java/java-tainted-arithmetic/
-        return part.leadingLength > Integer.MAX_VALUE - offset || offset > Integer.MAX_VALUE - part.leadingLength;
       }
 
       @Override
@@ -512,11 +495,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       @Override
       public String toString()
       {
-        StringBuilder result = new StringBuilder();
-        for (PatternPart part : parts) {
-          result.append(part);
-        }
-        return result.toString();
+        return "|" + Arrays.stream(parts).map(Objects::toString).collect(Collectors.joining("|")) + "|";
       }
     }
 
