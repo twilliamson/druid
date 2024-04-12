@@ -312,7 +312,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       LikePattern suffix = pattern.get(pattern.size() - 1);
       int suffixOffset = val.length() - suffix.length;
 
-      if (!suffix.matchesSuffix(val)) {
+      if (!suffix.matchesStartingAt(val, suffixOffset, val.length())) {
         return DruidPredicateMatch.FALSE;
       } else if (suffix.anchored) {
         // There was no % in the pattern
@@ -322,7 +322,7 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       int offset = 0;
 
       for (int i = 0; i < pattern.size() - 1; ++i) {
-        offset = pattern.get(i).advance(val, offset, val.length());
+        offset = pattern.get(i).advance(val, offset, suffixOffset);
 
         if (offset == -1) {
           return DruidPredicateMatch.FALSE;
@@ -442,72 +442,47 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         this.length = length;
       }
 
-      public int advance(String value, int offset, int endOffset)
+      public int advance(String value, int startOffset, int endOffset)
       {
         endOffset = Math.min(Math.max(0, endOffset), value.length());
 
-        if (offset > endOffset - length) {
+        if (startOffset > endOffset - length) {
           return -1;
         }
 
         if (anchored) {
-          return advance(value, offset, endOffset, true);
+          return matchesStartingAt(value, startOffset, endOffset) ? startOffset + length : -1;
         } else {
-          while (offset < endOffset) { // TODO TODO TODO < or <= ?
-            int matchOffset = advance(value, offset, endOffset, false);
-            if (matchOffset != -1) {
-              return matchOffset;
+          for (int offset = startOffset; offset < endOffset; ++offset) {
+            // TODO TODO TODO compare performance with using indexOf and subtracting leading length
+            if (matchesStartingAt(value, offset, endOffset)) {
+              return offset + length;
             }
-            ++offset;
           }
         }
 
         return -1;
       }
 
-      public boolean matchesSuffix(String value)
+      public boolean matchesStartingAt(String value, int offset, int endOffset) // TODO TODO TODO offset -> startOffset? range checks?
       {
-        return advance(value, value.length() - length, value.length(), true) != -1;
-      }
-
-      private int advance(String value, int offset, int endOffset, boolean anchored)
-      {
-        int startIndex = 0;
-
-        if (!anchored) {
-          startIndex = 1;
-          PatternPart first = parts[0];
-
-          if (overflows(first, offset)) {
-            return -1;
-          }
-
-          offset = value.indexOf(first.clause, offset + first.leadingLength);
-          if (offset == -1 || offset > endOffset) { // TODO TODO TODO > or >= ?
-            return -1;
-          }
-          offset += first.clause.length();
-        }
-
-        for (int i = startIndex; i < parts.length; i++) {
-          PatternPart part = parts[i];
-
+        for (PatternPart part : parts) {
           // TODO TODO TODO > or >= ?
           if (overflows(part, offset) || offset + part.leadingLength + part.clause.length() > endOffset) {
-            return -1;
+            return false;
           }
 
           if (!value.regionMatches(offset + part.leadingLength, part.clause, 0, part.clause.length())) {
-            return -1;
+            return false;
           }
 
           offset += part.leadingLength + part.clause.length();
         }
 
-        return offset;
+        return true;
       }
 
-      // TODO TODO TODO
+      // TODO TODO TODO inline again
       private boolean overflows(PatternPart part, int offset)
       {
         // Even though overflow would be handled by regionMatches, CodeQL flags it as needing to be checked:
