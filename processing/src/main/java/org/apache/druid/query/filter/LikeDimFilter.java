@@ -339,8 +339,14 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
 
         while (offset < suffixOffset) {
           // Optimization: The JVM has an intrinsic for String.indexOf()
-          int partOffset = val.indexOf(contains.parts[0].clause, offset);
           // TODO TODO TODO verify if indexOf is faster
+          int partOffset = val.indexOf(contains.parts[0].clause, offset);
+          // BUG BUG BUG BUG: has to adjust for leading length: TODO add unit test that would catch this
+          // TODO TODO TODO update offset, too?
+          if (partOffset == -1) {
+            break;
+          }
+
           if (contains.matches(val, partOffset, suffixOffset)) {
             partMatched = true;
             break;
