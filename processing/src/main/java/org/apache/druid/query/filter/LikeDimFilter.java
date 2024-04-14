@@ -311,7 +311,8 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       // Note: In the case of a leading %, the anchored prefix is an empty string.
       LikePattern prefix = pattern.get(0);
 
-      if (!prefix.matches(val, 0, val.length())) {
+      // TODO TODO TODO Try optimizing for startsWith?
+      if (!prefix.startsWith(val)) {
         return DruidPredicateMatch.FALSE;
       } else if (pattern.size() == 1) {
         // There was no % in the pattern
@@ -322,9 +323,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       // (We can't eagerly match the b_d_ portion, since that leads to false negatives: abcdexyzbcde)
       // Note: In the case of a trailing %, the anchored suffix is an empty string.
       LikePattern suffix = pattern.get(pattern.size() - 1);
-      int suffixOffset = val.length() - suffix.length;
 
-      if (suffixOffset < prefix.length || !suffix.matches(val, suffixOffset, val.length())) {
+      // TODO TODO TODO Try optimizing for endsWith?
+      if (!suffix.endsWith(val)) {
         return DruidPredicateMatch.FALSE;
       }
 
@@ -332,16 +333,19 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       // This is O(mn) where m is the pattern length and n is the value length.
       // In practice, we expect linear time, since most part matches should fail without searching the whole string.
       int offset = prefix.length;
+      int suffixOffset = val.length() - suffix.length;
 
       for (int i = 1; i < pattern.size() - 1; ++i) {
         LikePattern contains = pattern.get(i);
+        LikePattern.PatternPart firstPart = contains.parts[0];
         boolean partMatched = false;
+        int partOffset = offset + firstPart.leadingLength; // TODO TODO TODO boundary conditions
 
-        while (offset < suffixOffset) {
+        // TODO TODO TODO for-loop-ify?
+        while (partOffset < suffixOffset) {
           // Optimization: The JVM has an intrinsic for String.indexOf()
-          // TODO TODO TODO verify if indexOf is faster
-          int partOffset = val.indexOf(contains.parts[0].clause, offset);
-          // BUG BUG BUG BUG: has to adjust for leading length: TODO add unit test that would catch this
+          partOffset = val.indexOf(firstPart.clause, partOffset);
+          // TODO TODO TODO add unit test that would catch missing adjust for leading length
           // TODO TODO TODO update offset, too?
           if (partOffset == -1) {
             break;
@@ -349,9 +353,10 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
 
           if (contains.matches(val, partOffset, suffixOffset)) {
             partMatched = true;
+            offset = partOffset + contains.length;
             break;
           }
-          ++offset;
+          ++partOffset;
         }
 
         if (!partMatched) {
@@ -458,11 +463,33 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         this.length = length;
       }
 
+      public boolean startsWith(String value)
+      {
+        // TODO TODO TODO
+        if (parts.length == 1 && parts[0].clause.isEmpty() && parts[0].leadingLength == 0) {
+          return true;
+        }
+
+        return matches(value, 0, value.length());
+      }
+
+      public boolean endsWith(String value)
+      {
+        // TODO TODO TODO
+        if (parts.length == 1 && parts[0].clause.isEmpty() && parts[0].leadingLength == 0) {
+          return true;
+        }
+
+        return matches(value, value.length() - length, value.length());
+      }
+
       public boolean matches(String value, int startOffset, int endOffset)
       {
         if (startOffset < 0 || startOffset > endOffset) {
           return false;
         }
+
+        // TODO TODO TODO optimize for single instance? with no leading length?
 
         for (PatternPart part : parts) {
           if ((long) startOffset + part.leadingLength + part.clause.length() > endOffset) {

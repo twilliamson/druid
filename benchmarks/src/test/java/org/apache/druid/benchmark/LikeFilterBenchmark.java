@@ -38,6 +38,7 @@ import org.apache.druid.segment.data.GenericIndexed;
 import org.apache.druid.segment.data.RoaringBitmapSerdeFactory;
 import org.apache.druid.segment.filter.Filters;
 import org.apache.druid.segment.serde.StringUtf8ColumnIndexSupplier;
+import org.openjdk.jmh.Main;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -291,5 +292,10 @@ public class LikeFilterBenchmark
     }
 
     return ints;
+  }
+
+  public static void main(String[] args) throws Exception
+  {
+    Main.main(new String[]{".*Like.*Like.*fix", "-i", "5", "-wi", "5", "-p", "cardinality=1000000"});
   }
 }
