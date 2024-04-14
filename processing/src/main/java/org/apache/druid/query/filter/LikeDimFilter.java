@@ -310,30 +310,29 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
       // Check the anchored prefix, i.e., the pattern part that must occur at the start of the string.
       // Note: In the case of a leading %, the anchored prefix is an empty string.
       LikePattern prefix = pattern.get(0);
+      int offset = prefix.length;
 
-      // TODO TODO TODO Try optimizing for startsWith?
-      if (!prefix.startsWith(val)) {
+      if (!prefix.matches(val, 0, val.length())) {
         return DruidPredicateMatch.FALSE;
       } else if (pattern.size() == 1) {
         // There was no % in the pattern
-        return DruidPredicateMatch.of(prefix.length == val.length());
+        return DruidPredicateMatch.of(offset == val.length());
       }
 
       // Check for suffix anchored to the end of the string, e.g., a%b_d_
       // (We can't eagerly match the b_d_ portion, since that leads to false negatives: abcdexyzbcde)
       // Note: In the case of a trailing %, the anchored suffix is an empty string.
       LikePattern suffix = pattern.get(pattern.size() - 1);
+      int suffixOffset = val.length() - suffix.length;
 
-      // TODO TODO TODO Try optimizing for endsWith?
-      if (!suffix.endsWith(val)) {
+      // TODO TODO TODO ensure unit test is checking < vs <=
+      if (suffixOffset < offset || !suffix.matches(val, suffixOffset, val.length())) {
         return DruidPredicateMatch.FALSE;
       }
 
       // Check all the remaining unanchored patterns between the prefix and suffix.
       // This is O(mn) where m is the pattern length and n is the value length.
       // In practice, we expect linear time, since most part matches should fail without searching the whole string.
-      int offset = prefix.length;
-      int suffixOffset = val.length() - suffix.length;
 
       for (int i = 1; i < pattern.size() - 1; ++i) {
         LikePattern contains = pattern.get(i);
@@ -351,7 +350,8 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
             break;
           }
 
-          if (contains.matches(val, partOffset, suffixOffset)) {
+          // TODO TODO TODO add unit test that would catch missing adjust for leading length
+          if (contains.matches(val, partOffset - firstPart.leadingLength, suffixOffset)) {
             partMatched = true;
             offset = partOffset + contains.length;
             break;
@@ -463,33 +463,21 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         this.length = length;
       }
 
-      public boolean startsWith(String value)
-      {
-        // TODO TODO TODO
-        if (parts.length == 1 && parts[0].clause.isEmpty() && parts[0].leadingLength == 0) {
-          return true;
-        }
-
-        return matches(value, 0, value.length());
-      }
-
-      public boolean endsWith(String value)
-      {
-        // TODO TODO TODO
-        if (parts.length == 1 && parts[0].clause.isEmpty() && parts[0].leadingLength == 0) {
-          return true;
-        }
-
-        return matches(value, value.length() - length, value.length());
-      }
-
       public boolean matches(String value, int startOffset, int endOffset)
       {
         if (startOffset < 0 || startOffset > endOffset) {
           return false;
         }
 
-        // TODO TODO TODO optimize for single instance? with no leading length?
+        if (length == 0) {
+          return true;
+        }
+
+        // TODO TODO TODO does this help at all?
+        // TODO TODO TODO add boundary check unit tests (> vs >=)
+        if (parts.length == 1 && parts[0].leadingLength == 0) {
+          return value.startsWith(parts[0].clause, startOffset) && endOffset - startOffset >= parts[0].clause.length();
+        }
 
         for (PatternPart part : parts) {
           if ((long) startOffset + part.leadingLength + part.clause.length() > endOffset) {
