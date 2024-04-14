@@ -351,9 +351,11 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
           }
 
           // TODO TODO TODO add unit test that would catch missing adjust for leading length
-          if (contains.matches(val, partOffset - firstPart.leadingLength, suffixOffset)) {
+          if (contains.length == 1 || contains.matches(val, partOffset - firstPart.leadingLength, suffixOffset)) {
             partMatched = true;
-            offset = partOffset + contains.length;
+            offset = partOffset - firstPart.leadingLength + contains.length; // BUG BUG BUG: adding leading length twice?? or not??
+            // TODO TODO TODO add unit test that would fail with below
+            // offset = partOffset + contains.length; // BUG BUG BUG: adding leading length twice?? or not??
             break;
           }
           ++partOffset;
