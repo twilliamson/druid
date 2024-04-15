@@ -154,20 +154,21 @@ public class LikeDimFilterTest extends InitializedNullHandlingTest
     assertCompilation("", ":[^$]");
     assertCompilation("a", "a:[^a$]");
     assertCompilation("abc", "abc:[^abc$]");
-    assertCompilation("a%", "a:[^a, $]");
-    assertCompilation("%a", ":[^, a$]");
-    assertCompilation("%_a", ":[^, .a$]");
+    assertCompilation("a%", "a:[^a]");
+    assertCompilation("%a", ":[a$]");
+    assertCompilation("%a%", ":[a]");
+    assertCompilation("%_a", ":[.a$]");
     assertCompilation("_%a", ":[^., a$]");
     assertCompilation("_%_a", ":[^., .a$]");
-    assertCompilation("abc%", "abc:[^abc, $]");
+    assertCompilation("abc%", "abc:[^abc]");
     assertCompilation("a%b", "a:[^a, b$]");
     assertCompilation("abc%x", "abc:[^abc, x$]");
     assertCompilation("abc%xyz", "abc:[^abc, xyz$]");
     assertCompilation("____", ":[^....$]");
-    assertCompilation("%%%%", ":[^, $]");
-    assertCompilation("%_%_%%__", ":[^, ., ., ..$]");
-    assertCompilation("%_%a_%bc%_d_", ":[^, ., a., bc, .d.$]");
-    assertCompilation("%1 _ 5%6", ":[^, 1 . 5, 6$]");
+    assertCompilation("%%%%", ":[]");
+    assertCompilation("%_%_%%__", ":[., ., ..$]");
+    assertCompilation("%_%a_%bc%_d_", ":[., a., bc, .d.$]");
+    assertCompilation("%1 _ 5%6", ":[1 . 5, 6$]");
     assertCompilation("\\%_%a_\\%b\\\\c\\___%_%_d_w%x_y_z", "%:[^\\u0025., a.\\u0025b\\u005Cc_.., ., .d.w, x.y.z$]");
   }
 

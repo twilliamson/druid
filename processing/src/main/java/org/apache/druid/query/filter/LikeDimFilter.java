@@ -257,7 +257,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
             suffixMatch = SuffixMatch.MATCH_ANY;
           }
           if (regex.length() > 0) {
-            pattern.add(Pattern.compile(regex.toString(), Pattern.DOTALL));
+            if (regex.length() > 1 || regex.charAt(0) != '^') {
+              pattern.add(Pattern.compile(regex.toString(), Pattern.DOTALL));
+            }
             regex.setLength(0);
           }
         } else if (c == '_' && !escaping) {
@@ -275,9 +277,9 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         }
       }
 
-      if (pattern.isEmpty() && regex.length() == 0) {
+      if (likePattern.isEmpty()) {
         pattern.add(Pattern.compile("^$"));
-      } else {
+      } else if (regex.length() > 0) {
         regex.append('$');
         pattern.add(Pattern.compile(regex.toString(), Pattern.DOTALL));
       }
@@ -306,6 +308,11 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         return DruidPredicateMatch.UNKNOWN;
       }
 
+      if (pattern.size() == 1) {
+        // Most common case is a single pattern: a% => ^a, %z => z$, %m% => m
+        return DruidPredicateMatch.of(pattern.get(0).matcher(val).find());
+      }
+
       int offset = 0;
 
       for (Pattern part : pattern) {
@@ -318,7 +325,6 @@ public class LikeDimFilter extends AbstractOptimizableDimFilter implements DimFi
         offset = matcher.end();
       }
 
-      // LikeDimFilter.from() guarantees that the last match is anchored (i.e., ends with $) so if we get here, we match
       return DruidPredicateMatch.TRUE;
     }
 
